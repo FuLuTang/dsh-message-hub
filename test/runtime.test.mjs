@@ -22,9 +22,10 @@ class FakeSessionController extends Service {
   constructor(ctx) {
     super(ctx, 'sessionController')
     this.followups = []
+    this.injected = []
   }
   async resolveAgent(sessionId) {
-    return { agent: { followup: (message) => this.followups.push({ sessionId, message }) } }
+    return { agent: { inject: (message) => this.injected.push({ sessionId, message }), followup: (message) => this.followups.push({ sessionId, message }) } }
   }
 }
 
@@ -46,11 +47,21 @@ test('plugin applies through a real Cordis context and routes a file trigger to 
       pollMs: 60_000, stablePolls: 1, maxBytes: 64 * 1024,
       payloadFile: 'input/message.json', payloadFormat: 'json', statusFile: 'status.json',
     }],
-    outlets: [{ id: 'reply', spoolId: 'volume', endpointId: 'device', enabled: true, allowBoundSession: true, allowedSessionIds: [] }],
+    outlets: [],
   }), { inject })
   const fiber = await root.plugin(plugin)
   t.after(() => fiber.dispose())
   t.after(() => root.fiber.dispose())
+  await root.messageHub.registerEgress({
+    id: 'reply', name: 'Reply device', schema: { type: 'object', required: ['text'], properties: { text: { type: 'string' } } },
+    async invoke(args) { return { success: true, message: `sent: ${args.text}` } },
+  })
+
+  await root.messageHub.registerIngress({ id: 'custom-in', name: 'Custom input', template: 'From {{sender}}: {{text}}' })
+  root.messageHub.bindIngress('custom-in', 'session-A', { cwd: rootPath })
+  await root.messageHub.emitIngress('custom-in', { eventId: 'custom-1', values: { sender: 'tester', text: 'injected hello' } })
+  assert.equal(root.sessionController.injected.length, 2)
+  assert.match(root.sessionController.injected[1].message.content[0].text, /injected hello/)
 
   const bind = root.tools.definitions.get('message_hub_bind')
   await bind.execute({ adapterId: 'volume' }, { agent: { session: { id: 'session-A' } } })
@@ -61,16 +72,16 @@ test('plugin applies through a real Cordis context and routes a file trigger to 
   const spool = root.messageHub.spools.get('volume')
   await spool.scan(); await spool.scan(); await spool.scan()
 
-  assert.equal(root.sessionController.followups.length, 1)
-  assert.equal(root.sessionController.followups[0].sessionId, 'session-A')
-  assert.match(root.sessionController.followups[0].message.content[0].text, /wake up/)
+  assert.equal(root.sessionController.followups.length, 2)
+  assert.equal(root.sessionController.followups.at(-1).sessionId, 'session-A')
+  assert.match(root.sessionController.followups.at(-1).message.content[0].text, /wake up/)
   const send = root.tools.definitions.get('message_hub_send')
-  const output = JSON.parse(await send.execute({ outletId: 'reply', text: 'done' }, { agent: { session: { id: 'session-A' } } }))
-  assert.equal(output.state, 'accepted')
-  root.messageHub.reportEndpoint('volume', { endpointId: 'device', state: 'offline', accepting: false })
+  const output = JSON.parse(await send.execute({ channelId: 'reply', arguments: { text: 'done' } }, { agent: { session: { id: 'session-A' } } }))
+  assert.deepEqual(output, { success: true, message: 'sent: done' })
+  await root.messageHub.setChannelEnabled('reply', false)
   await assert.rejects(
-    () => send.execute({ outletId: 'reply', text: 'blocked' }, { agent: { session: { id: 'session-A' } } }),
-    /unavailable/,
+    () => send.execute({ channelId: 'reply', arguments: { text: 'blocked' } }, { agent: { session: { id: 'session-A' } } }),
+    /disabled/,
   )
   await assert.rejects(
     () => root.messageHub.registerAdapter({ id: 'broken', async start() { throw new Error('boom') } }),

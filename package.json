@@ -7,21 +7,34 @@
   "main": "index.js",
   "exports": {
     ".": "./index.js",
+    "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
   "files": [
     "index.js",
+    "lib/client.js",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-layout"
+      ],
+      "platform": "web"
     }
   },
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "check": "node --check index.js"
+    "check": "node --check index.js && node --check lib/client.js",
+    "build": "node scripts/build-client.mjs",
+    "verify:package": "npm pack --dry-run"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
