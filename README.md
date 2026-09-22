@@ -1,152 +1,152 @@
-# Message Hub（v1）
+# dsh-message-hub
 
-一个面向 DSH 的**通信路由插件**。它不实现 Telegram、QQ、邮件或串口协议；这些由用户自己的程序实现。Hub 只统一四件事：
+`dsh-message-hub` 是 DSH 的通信渠道注册与路由插件。当前设计把**渠道（channel）**作为统一目录：传输实现向 Hub 注册入站或出站实现，Agent 和 Web UI 只使用稳定的渠道 ID。Hub 不实现 QQ、Telegram、邮件或串口协议；这些由宿主插件或用户代码实现。
 
-1. 以**至少一次**语义将外部事件投递到绑定的 DSH 会话；
-2. 让 Agent 通过预配置的逻辑出口主动发送；
-3. 记录去重、绑定、投递状态和出口可用性；
-4. 给自定义 transport 留一个很小的 Adapter 接口。
+## 安装
 
-v1 随附一个 `file-spool` transport，适合 Docker volume、共享目录、串口守护程序、shell 脚本或任何能读写文件的程序。
+在 DSH profile 中安装 GitHub 包：
 
-## 「目录服务」和「进程服务」是不是同一种东西？
-
-从 Hub 的角度，**是同一个抽象层：Adapter**。它们都只能向 Hub 报告入站事件、出口状态，以及接受 Hub 的出站投递。
-
-差别是传输边界：
-
-- `file-spool` 用目录作为可靠边界：外部代码与 Hub 无需同进程；可跨容器、跨语言、重启后仍有文件可恢复。
-- `process` adapter（本版只定义接口，未内置）用 stdin/stdout、socket 或 SDK 调用作为边界；更适合持续连接的 Telegram/QQ bot。
-- `in-process` adapter（本版已开放注册接口）由另一个可信 DSH 插件直接注册；适合共享登录态、共享运行时的代码。
-
-因此不用把“看目录的服务”另做一个与 Message Hub 平行的概念：它就是一个 transport 实现。目录协议需要单独规定，是因为**原子写入、触发、归档、去重和 ack**和长连接程序完全不同。
-
-## v1 标准模型
-
-```text
-user code / QQ / Telegram / serial device
-               │
-         Adapter (file-spool first)
-               │ emitInbound / reportEndpoint
-               ▼
- Message Hub: binding + durable ledger + routing
-               │ exact sessionId
-               ▼
-ctx.sessionController.resolveAgent(sessionId)
-               │ createUserMessage + followup
-               ▼
-             DSH Agent
-               │ message_hub_send(outletId, text)
-               ▼
-          adapter outbox / user code
+```sh
+npm install github:FuLuTang/dsh-message-hub
+# 或
+pnpm add github:FuLuTang/dsh-message-hub
 ```
 
-Adapter **永远拿不到** `Agent`、`Session` 或任意会话选择权。Hub 根据 adapter id 的显式绑定决定唯一目标会话；找不到目标时保留 pending，不会退回到“当前活跃会话”。
+然后将插件加入 profile（或使用包内的 `cordis.patch.yml` 作为 patch 起点）。Node.js 要求 `>=22`。
 
-## File-spool 目录协议
+## Channel registry
 
-假设 `root=/mnt/message-device`：
+配置中的 `channels` 只是声明渠道元数据和初始开关；真正的运行时实现由受信任的 DSH 插件注册：
 
-```text
-/mnt/message-device/
-├── input/                         # 外部代码写入给 Agent 看的内容
-│   └── message.json
-├── output/                        # Hub 写给外部代码的投递文件
-│   ├── mh-<uuid>.json
-│   ├── .tmp/                      # Hub 内部临时发布目录
-│   └── ack/                       # 外部代码写回 delivery ack
-├── status.json                    # 外部代码维护的逻辑出口状态（可选）
-├── anything-at-all.trigger        # 任意普通文件：入站触发器
-└── .message-hub/processed/        # Hub 归档已消费 trigger/ack
+```js
+await ctx.messageHub.registerIngress({
+  id: 'telegram-in',
+  name: 'Telegram 入站',
+  description: '接收 Telegram 更新',
+  template: '来自 {{sender}}：{{text}}',
+  wakeup: true,
+  setEnabled: async (enabled) => { /* 启停 transport */ },
+})
+
+await ctx.messageHub.registerEgress({
+  id: 'telegram-out',
+  name: 'Telegram 出站',
+  description: '发送一条 Telegram 消息',
+  schema: { type: 'object', required: ['chatId', 'text'] },
+  setEnabled: async (enabled) => { /* 启停 transport */ },
+  async invoke(args, { deliveryId, sessionId }) {
+    return { success: true, message: 'sent' }
+  },
+})
 ```
 
-### 入站触发
+渠道 ID 在全局注册表中唯一，不能同时注册为 ingress 和 egress；注册函数返回解除注册的 disposer。Egress 的 `schema` 用于校验 `send` 参数。实现可通过 `reportChannelStatus(id, { light, detail })` 更新状态灯，`light` 为 `black`、`yellow` 或 `green`。
 
-- `root` **直接子级**的任意普通文件，只要不是 `status.json`，就是 trigger。
-- `input/`、`output/`、`.message-hub/` 及其后代永不触发。
-- 目录和符号链接不触发；Hub 也拒绝符号链接逃逸。
-- 推荐写入方在同一文件系统内：先写临时文件，再 `rename()` 成任意 trigger 文件名。Hub 会等待它至少经过一次稳定轮询后再读取。
-- trigger 可以是空文件，也可以是 JSON。它本身的任意非 JSON 文本**不会**直接成为 Agent 指令，避免把碰巧被 touch 的文件内容当消息。
+每个渠道同时有：
 
-默认 payload 来自 `input/message.json`：
+- `desiredEnabled`：用户/配置要求的开关。调用 Web API 的 toggle 或 `setChannelEnabled()` 时更新，并调用已注册实现的 `setEnabled`。
+- `light`：实现报告的运行状态灯；它不等同于开关。默认是 `black`。
+- `detail`、`updatedAt`：状态说明和更新时间。
 
-```json
-{
-  "text": "设备按钮被按下，请查看 input/ 中的最新文件。"
-}
+入站关闭时事件返回 `disabled`；未绑定时返回 `unbound`。出站关闭或未知时，`send` 失败，不会隐式选择其他渠道或会话。
+
+配置示例：
+
+```yaml
+- id: dsh-message-hub
+  config:
+    storagePath: ''                 # 默认 $DSH_HOME/message-hub/state.json
+    channels:
+      - id: telegram-in
+        label: Telegram 入站
+        desiredEnabled: true
+      - id: telegram-out
+        label: Telegram 出站
+        desiredEnabled: true
 ```
 
-也可把文字直接放在 trigger JSON：
+状态、绑定、入站去重和投递记录保存在 `storagePath`；同一路径只允许一个 Hub 进程使用。
 
-```json
-{
-  "messageId": "device-event-842",
-  "sender": "panel-A",
-  "text": "开始执行检测",
-  "meta": { "button": "green" }
-}
-```
+## 入站绑定、cwd 替代会话和投递方式
 
-字段说明：
+通过 `bindIngress(channelId, sessionId, options)` 把 ingress 绑定到**精确的 DSH session**。绑定记录可包含：
 
-| 字段 | 含义 |
+- `template`：覆盖渠道模板；支持 `{{text}}` 以及 `event.values` 中的 `{{sender}}` 等简单键。
+- `wakeup`：是否在两个上下文注入后唤醒 Agent，默认开启。
+- `cwd`：替代会话工作目录。
+
+`emitIngress(channelId, event)` 的流程是：检查开关和绑定、按 `eventId`/`id` 去重，然后解析绑定 session。若 session 已不可用且绑定包含 `cwd`，Hub 会用该 cwd 创建替代会话、更新绑定并继续投递；没有 cwd 或创建失败则保留失败结果，不会投递到别的会话。
+
+成功的 ingress 路由向目标 Agent 注入两条消息：第一条说明这是来自该渠道的不可信外部上下文，第二条包含渲染后的 `<external-message>` 内容；若事件、绑定和渠道都允许唤醒，再追加一次 `followup`。事件默认字段包括 `eventId`/`id`、`values`、`text`、`sender`；不同 transport 可携带自己的元数据。入站 ledger 提供至少一次语义。
+
+## 固定 Agent 工具
+
+渠道注册表的工具集合是固定的：
+
+| 工具 | 参数与用途 |
 |---|---|
-| `messageId` / `id` | 外部系统的稳定事件 ID；优先用于跨重启去重。没有时 Hub 用 trigger 的路径、stat 和内容 hash 生成 ID。 |
-| `sender` | 外部来源的显示身份；仅作溯源，不能选择 DSH 会话。 |
-| `text` | 交给 Agent 的文本。Hub 会标为 external input，而非系统指令。 |
-| `meta` | 任意 JSON 元数据；v1 只审计/保留，不给模型拼接复杂算法。 |
+| `message_hub_list_channels` | 无参数；列出渠道 ID、方向、`desiredEnabled`、状态灯和详情。 |
+| `message_hub_describe_channels` | 可选 `channelIds: string[]`；返回 egress 的说明和 `argumentsSchema`。不传时列出全部 egress。 |
+| `message_hub_send` | `channelId` 与 `arguments`；校验 schema 后调用对应 egress。调用上下文的 sessionId 会传给实现。 |
+| `message_hub_bind` / `message_hub_unbind` | 绑定或解除当前对话对指定旧式 adapter 的绑定。 |
+| `message_hub_status` | 查看完整快照（渠道、绑定、adapter、endpoint、outlet、近期投递）。 |
+| `message_hub_read_input` | 读取绑定 file-spool 的 `input/` 下 UTF-8 文件（最大 64 KiB）。 |
 
-若没有文字 payload，Hub 会向绑定会话发送一个“外部 trigger 已到达”的简短 notice；Agent 可调用 `message_hub_read_input(adapterId, path)` 安全读取该 adapter 的 `input/` 内 UTF-8 文件。
+`message_hub_send` 不接受任意地址、联系人或会话参数；路由由已注册渠道实现决定。旧式 adapter 的绑定工具不会改变 channel registry 的精确 ingress 绑定规则。
 
-### Ack 与去重
+## Web API 与客户端
 
-Hub 只有在消息已成功排进**精确绑定会话**后才 ack：
+启用 Web runtime 时，插件注册本地前缀 `/message-hub/api`。所有接口均为 JSON `POST`，且只接受受信任的 localhost/配置 trusted host 请求：
 
-- `ackMode: delete`（默认）：trigger 原子移动到 `.message-hub/processed/`。
-- `ackMode: keep`：保留 trigger；Hub 的持久 ledger 阻止重复路由。
-- session 未绑定、无法恢复或路由失败时，trigger 保留，之后重试。
-- Hub 重启后依旧使用 ledger 去重；不会把失败消息改投递给别的会话。
-- 语义是**至少一次**，不是跨崩溃的“恰好一次”：若进程恰好在 `followup()` 成功后、写入 routed 记录前崩溃，同一个 trigger 可能再次入队。因此外部代码应提供稳定 `messageId`，业务动作也应具备幂等性。
+- `/message-hub/api/snapshot`：返回 Hub 快照。
+- `/message-hub/api/toggle`：传入 `{ channelId, enabled }`，修改 `desiredEnabled`。
+- `/message-hub/api/bind`：传入 `{ channelId, sessionId, cwd?, template?, wakeup? }`，绑定 ingress，并可设置替代 cwd。
 
-### 出站
+`lib/client.js` 提供 Web 客户端 bundle：它在会话标题工具区显示渠道状态灯，每 5 秒刷新快照，支持开关渠道，并为 ingress 输入 session ID 和替代 cwd 完成绑定。Headless profile 可以只使用 Host runtime 和 Agent tools，不注入客户端。
 
-Agent 调用 `message_hub_send` 后，Hub 原子发布：
+## Legacy file-spool adapter
 
-```json
-{
-  "protocol": "message-hub/v1",
-  "type": "outbound",
-  "deliveryId": "mh-...",
-  "idempotencyKey": "mh-...",
-  "adapterId": "volume-main",
-  "endpointId": "panel",
-  "outletId": "panel-notify",
-  "sessionId": "...",
-  "createdAt": "2026-...Z",
-  "payload": [{ "kind": "text", "text": "任务完成" }],
-  "meta": {}
-}
+`file-spool` 是仍然受支持的旧式 adapter，适合共享目录、Docker volume 或跨语言脚本；它不是 channel registry 的 ingress/egress 实现。配置仍使用 `spools` 和 `outlets`：
+
+```yaml
+spools:
+  - id: volume-main
+    root: /mnt/message-device
+    enabled: true
+    defaultSessionId: ''
+    ackMode: delete       # delete | keep
+    pollMs: 1000
+    stablePolls: 1
+    maxBytes: 262144
+    payloadFile: input/message.json
+    payloadFormat: json   # json | text | reference
+    statusFile: status.json
+outlets:
+  - id: panel-notify
+    spoolId: volume-main
+    endpointId: panel
+    enabled: true
+    allowBoundSession: true
+    allowedSessionIds: []
 ```
 
-到 `output/<deliveryId>.json`。这只表示文件已进入 outbox（`accepted`），不表示你的用户程序已经把它发到 QQ/邮件/设备。
+目录布局：
 
-若用户程序想回报最终结果，在 `output/ack/<deliveryId>.ack.json` 写：
-
-```json
-{ "deliveryId": "mh-...", "state": "sent", "externalId": "qq-msg-7" }
+```text
+root/
+├── input/message.json       # 默认入站 payload
+├── output/                  # Hub 原子写入 outbound JSON
+│   ├── .tmp/
+│   └── ack/                 # 外部程序写回 ack JSON
+├── status.json              # 可选 endpoint 状态快照
+└── .message-hub/processed/  # 已处理 trigger/ack
 ```
 
-或：
+`root` 直接子级的普通文件（不含 `statusFile`）是 trigger；目录、符号链接以及 `input/`、`output/`、`.message-hub/` 后代不会触发。推荐先写临时文件再 `rename`，Hub 会等待稳定轮询。trigger JSON 可提供 `messageId`/`id`、`sender`、`text` 和 `meta`；非 JSON 文件不会被当作 Agent 指令，默认从 `input/message.json` 读取 payload。
 
-```json
-{ "deliveryId": "mh-...", "state": "failed", "error": "serial device offline", "retryable": true }
-```
+成功排进精确绑定 session 后，`ackMode: delete` 将 trigger 移入 processed，`keep` 则保留原文件并依靠 ledger 去重。session 不可用或路由失败时不会确认。语义是至少一次，外部事件应提供稳定 ID 并让业务动作幂等。
 
-Hub 将状态更新为 `sent` / `failed`；可用 `message_hub_status` 查看。
-
-### 用户代码维护出口可用性
-
-外部代码可随时原子替换 `status.json`：
+出站文件写入 `output/<deliveryId>.json`，这只表示 Hub 已接受并进入 outbox；外部程序可在 `output/ack/<deliveryId>.ack.json` 写入 `{ deliveryId, state: "sent", externalId }` 或 failed 结果。`status.json` 可原子替换，例如：
 
 ```json
 {
@@ -154,107 +154,18 @@ Hub 将状态更新为 `sent` / `failed`；可用 `message_hub_status` 查看。
     "panel": {
       "state": "available",
       "accepting": true,
-      "detail": "serial ttyUSB0 connected",
-      "updatedAt": "2026-09-12T01:00:00Z"
-    },
-    "qq-shell": {
-      "state": "busy",
-      "accepting": false,
-      "detail": "reconnecting"
+      "detail": "device ready"
     }
   }
 }
 ```
 
-`state` 为 `available | busy | offline | unknown`；`accepting` 独立表达“当前是否接受新投递”。逻辑 endpoint 是用户定义的稳定名字，不等同于某条网络连接。
+endpoint `state` 为 `available | busy | offline | unknown`，`accepting: false` 或 `offline` 会阻止新的 file-spool 出站投递。缺少有效 status 文件时 endpoint 为 unknown，但默认仍 accepting；它不会自动阻止发送。
 
-## 配置
-
-安装后，在 profile patch 中覆盖 `dsh-message-hub`：
-
-```yaml
-- id: dsh-message-hub
-  config:
-    storagePath: '' # 默认 $DSH_HOME/message-hub/state.json
-    spools:
-      - id: volume-main
-        root: /mnt/message-device
-        enabled: true
-        # 留空后，在目标对话中由 Agent 调用 message_hub_bind 绑定。
-        defaultSessionId: ''
-        ackMode: delete       # delete | keep
-        pollMs: 1000
-        stablePolls: 1
-        maxBytes: 262144
-        payloadFile: input/message.json
-        payloadFormat: json  # json | text | reference
-        statusFile: status.json
-    outlets:
-      - id: panel-notify
-        spoolId: volume-main
-        endpointId: panel
-        enabled: true
-        # true: 仅允许绑定到 volume-main 的会话使用该出口。
-        allowBoundSession: true
-        allowedSessionIds: [] # 可额外显式允许的会话
-```
-
-`defaultSessionId` 适用于运维静态配置；通常建议留空，然后在目标 Web 对话中让 Agent 使用 `message_hub_bind`。动态绑定会覆盖 static binding。
-
-`storagePath` 是 Hub 的绑定、去重和投递 ledger，**不得位于任一 spool 的 `root` 内**，否则它自己会成为“未知 trigger”。同一个 `storagePath` 只允许一个 Hub 进程持有；v1 使用带 PID 的 lockfile 拒绝第二实例。
-
-## Agent 工具
-
-| 工具 | 用途 |
-|---|---|
-| `message_hub_bind(adapterId)` | 将调用所在的 DSH 对话绑定为该 adapter 的唯一入站目标。 |
-| `message_hub_unbind(adapterId)` | 仅解除调用所在对话自己的绑定。 |
-| `message_hub_send(outletId, text)` | 向预配置逻辑出口投递文字；没有任意 address 参数。 |
-| `message_hub_read_input(adapterId, path)` | 读取被绑定 adapter 的 `input/` 内、最大 64 KiB UTF-8 文件。 |
-| `message_hub_status()` | 查看绑定、adapter、端点状态和近期投递。 |
-
-## 自定义 Adapter 接口（v1）
-
-另一个**受信任** DSH Host 插件可调用 `ctx.messageHub.registerAdapter(adapter)`：
-
-```js
-const dispose = await ctx.messageHub.registerAdapter({
-  id: 'my-telegram',
-  type: 'process',
-  async start(api) {
-    // 一个真实入站事件；没有 sessionId，不能绕过 Hub binding。
-    await api.emitInbound({
-      messageId: 'tg-123',
-      sender: 'owner',
-      text: 'hello',
-      meta: { chatId: '...' },
-    })
-    api.reportEndpoint({ endpointId: 'owner-telegram', state: 'available', accepting: true })
-  },
-  async send(delivery) {
-    // delivery 有 deliveryId / idempotencyKey / endpointId / payload。
-    // 只表示本 adapter 已接收时返回 accepted。
-    return { state: 'accepted', externalId: 'provider-request-id' }
-  },
-  async stop() {}
-})
-```
-
-Adapter 可调用：
-
-- `api.emitInbound(event)`：Hub 负责会话路由和去重；event 不携带可控制会话的字段。
-- `api.reportEndpoint(status)`：增量更新一个逻辑出口状态。
-- `api.replaceEndpoints(statuses)`：替换该 adapter 的完整 endpoint 快照；适合文件状态表，已删除的 endpoint 不会残留。
-- `api.deliveryUpdate(update)`：异步更新一个已存在的出站 delivery。
-- `api.log(message)`：写入 Host 日志。
-
-这是刻意小的接口。v1 不做复杂规则 DSL、自动联系人管理、附件复制、跨会话广播或“恰好一次外部投递”。将来 process/socket/webhook adapter 都可复用同样的数据模型。
-
-## 开发与测试
+## 开发
 
 ```sh
 npm run check
 npm test
+npm run build
 ```
-
-当前测试覆盖：稳定 trigger、payload 路由、归档、outbox 发布、status/ack，以及 input 路径逃逸防护。

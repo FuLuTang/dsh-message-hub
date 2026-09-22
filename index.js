@@ -403,9 +403,11 @@ export class MessageHubRuntime extends Service {
     this.recordInbound(key, { state: 'routed', channelId: id, sessionId: binding.sessionId, routedAt: nowIso() }); return { accepted: true, key, sessionId: binding.sessionId }
   }
 
-  bindIngress(channelId, sessionId, options = {}) {
+  async bindIngress(channelId, sessionId, options = {}) {
     const id = cleanId(channelId, 'ingress channel id'); if (!this.ingresses.has(id)) throw new Error(`unknown ingress channel "${id}"`)
-    this.state.bindings[id] = { sessionId: requireSessionId(sessionId), cwd: text(options.cwd), template: text(options.template), wakeup: options.wakeup !== false, updatedAt: nowIso() }; this.persist(); return this.state.bindings[id]
+    const exactSessionId = requireSessionId(sessionId); const resolved = await this.ctx.sessionController.resolveAgent(exactSessionId)
+    if (!resolved || 'error' in resolved) throw new Error(`cannot bind unavailable session "${exactSessionId}"`)
+    this.state.bindings[id] = { sessionId: exactSessionId, cwd: text(options.cwd), template: text(options.template), wakeup: options.wakeup !== false, updatedAt: nowIso() }; this.persist(); return this.state.bindings[id]
   }
 
   bindingFor(adapterId) {

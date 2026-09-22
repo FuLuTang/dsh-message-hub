@@ -58,7 +58,7 @@ test('plugin applies through a real Cordis context and routes a file trigger to 
   })
 
   await root.messageHub.registerIngress({ id: 'custom-in', name: 'Custom input', template: 'From {{sender}}: {{text}}' })
-  root.messageHub.bindIngress('custom-in', 'session-A', { cwd: rootPath })
+  await root.messageHub.bindIngress('custom-in', 'session-A', { cwd: rootPath })
   await root.messageHub.emitIngress('custom-in', { eventId: 'custom-1', values: { sender: 'tester', text: 'injected hello' } })
   assert.equal(root.sessionController.injected.length, 2)
   assert.match(root.sessionController.injected[1].message.content[0].text, /injected hello/)
