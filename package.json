@@ -1,8 +1,25 @@
 {
   "name": "dsh-message-hub",
   "version": "0.1.0",
-  "private": true,
-  "description": "A transport-neutral message hub for DeepSeek Harness, with a file-spool adapter.",
+  "description": "A channel registry and transport-neutral communication hub plugin for DeepSeek Harness.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FuLuTang/dsh-message-hub.git"
+  },
+  "homepage": "https://github.com/FuLuTang/dsh-message-hub#readme",
+  "bugs": {
+    "url": "https://github.com/FuLuTang/dsh-message-hub/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "deepseek",
+    "cordis",
+    "message-hub",
+    "communication"
+  ],
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -28,8 +45,16 @@
         "@deepseek-ai/dsh-client-ui-layout"
       ],
       "platform": "web"
+    },
+    "catalog": {
+      "category": "integration",
+      "summary": {
+        "en": "Manage user-defined inbound and outbound communication channels for DSH.",
+        "zh": "管理用户自定义的 DSH 消息接入与发出渠道。"
+      }
     }
   },
+  "packageManager": "pnpm@11.26.0",
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "check": "node --check index.js && node --check lib/client.js",

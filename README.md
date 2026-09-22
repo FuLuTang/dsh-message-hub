@@ -4,15 +4,21 @@
 
 ## 安装
 
-在 DSH profile 中安装 GitHub 包：
+在 DSH profile 中应使用官方插件安装器：
 
 ```sh
-npm install github:FuLuTang/dsh-message-hub
-# 或
-pnpm add github:FuLuTang/dsh-message-hub
+dsh plugin --profile web add github:FuLuTang/dsh-message-hub
 ```
 
-然后将插件加入 profile（或使用包内的 `cordis.patch.yml` 作为 patch 起点）。Node.js 要求 `>=22`。
+它会在 profile 中安装包，并根据 `dsh.bundle.patch` 自动加入 bundle 层。安装后重启 DSH Web；新增或更新 client bundle 后还应强制刷新浏览器页面。
+
+本地 checkout 调试可使用：
+
+```sh
+dsh plugin --profile web add link:/absolute/path/to/dsh-message-hub
+```
+
+不建议只执行 `npm install`/`pnpm add`：那只安装依赖，不保证插件进入 profile 的 bundle 列表。Node.js 要求 `>=22`。
 
 ## Channel registry
 
@@ -161,6 +167,19 @@ root/
 ```
 
 endpoint `state` 为 `available | busy | offline | unknown`，`accepting: false` 或 `offline` 会阻止新的 file-spool 出站投递。缺少有效 status 文件时 endpoint 为 unknown，但默认仍 accepting；它不会自动阻止发送。
+
+## DSH 兼容性与包格式
+
+当前没有官方约定的 `dshVersion` / `dsh.version` 字段；兼容性由 `dsh.bundle`、可选的 `dsh.client`、peer dependencies 以及实际 profile composition 决定。本包针对 Node.js `>=22`，并声明 Cordis、DSH LLM/Tools 和 Schemastery peer dependencies。实际安装时应让目标 profile 的 `dsh plugin` 解析这些 peer，而不是把某个 DSH 版本硬编码进业务配置。
+
+包结构遵循官方 Bundle 约定：根入口、`cordis.patch.yml`、`exports["./client"]` 和 `dsh.client`。推荐使用官方安装器，而不是手工修改 profile：
+
+```sh
+dsh plugin --profile web add github:FuLuTang/dsh-message-hub
+# 安装后重启 dsh web，并强制刷新浏览器
+```
+
+参考：[官方发布文档](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/develop/basic/publish.md)、[dsh-cron 社区实现](https://github.com/XiaoWind/dsh-cron) 和 [DSH plugin market 约定](https://github.com/deepseek-ai/deepseek-harness/discussions/5867)。
 
 ## 开发
 
