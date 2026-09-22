@@ -1,0 +1,7 @@
+- insert:
+    - id: message-hub-smoke
+      name: 'file:///home/fulutang/Documents/Github/message-hub/index.js'
+      config:
+        storagePath: '/tmp/message-hub-dsh-smoke-state.json'
+        spools: []
+        outlets: []

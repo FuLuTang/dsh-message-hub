@@ -1,0 +1,11 @@
+# dsh-message-hub bundle defaults. Override this entry from your profile patch.
+- insert:
+    - id: dsh-message-hub
+      name: dsh-message-hub
+      config:
+        # Empty chooses $DSH_HOME/message-hub/state.json.
+        storagePath: ''
+        # File-spool adapters. Add no adapter until a real volume is ready.
+        spools: []
+        # Logical outbound endpoints. Every outlet names exactly one spool.
+        outlets: []
