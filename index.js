@@ -1014,8 +1014,13 @@ export async function apply(ctx, config) {
       if (!trusted || req.headers['sec-fetch-site'] === 'cross-site') { res.writeHead(403); res.end(); return }
       if (req.method !== 'POST') { res.writeHead(405); res.end(); return }
       const path = new URL(req.url || '/', 'http://dsh.internal').pathname
-      if (path !== '/message-hub/api/snapshot') { res.writeHead(404); res.end(); return }
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ ok: true, result: hub.snapshot() }))
+      const body = await new Promise((resolve, reject) => { const chunks = []; let size = 0; req.on('data', (chunk) => { size += chunk.length; if (size > 64 * 1024) reject(new Error('request body too large')); else chunks.push(chunk) }); req.on('end', () => { try { resolve(chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}) } catch { reject(new Error('invalid JSON')) } }); req.on('error', reject) })
+      let result
+      if (path === '/message-hub/api/snapshot') result = hub.snapshot()
+      else if (path === '/message-hub/api/toggle') result = await hub.setChannelEnabled(body.channelId, body.enabled)
+      else if (path === '/message-hub/api/bind') result = hub.bindIngress(body.channelId, body.sessionId, { cwd: body.cwd, template: body.template, wakeup: body.wakeup })
+      else { res.writeHead(404); res.end(); return }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ ok: true, result }))
     },
   }), 'message-hub web api'))
 }
