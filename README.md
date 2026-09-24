@@ -108,7 +108,7 @@ await ctx.messageHub.registerEgress({
 - `/message-hub/api/toggle`：传入 `{ channelId, enabled }`，修改 `desiredEnabled`。
 - `/message-hub/api/bind`：传入 `{ channelId, sessionId, cwd?, template?, wakeup? }`，绑定 ingress，并可设置替代 cwd。
 
-`lib/client.js` 提供 Web 客户端 bundle：它在会话标题工具区显示渠道状态灯，每 5 秒刷新快照，支持开关渠道，并为 ingress 输入 session ID 和替代 cwd 完成绑定。Headless profile 可以只使用 Host runtime 和 Agent tools，不注入客户端。
+`lib/client.js` 提供 Web 客户端 bundle：在 **设置 → 插件 →「消息渠道」** 标签展示接入/发出渠道面板，包含黑黄绿灯、开关与 ingress 绑定；同时保留会话标题栏的快捷浮层。两处面板复用同一组件，每 5 秒刷新快照。设置页的插件配置标签只枚举 settings namespace，本插件的独立渠道面板通过 `settings.plugins.tab` 扩展槽位注册。Headless profile 可以只使用 Host runtime 和 Agent tools，不注入客户端。
 
 ## Legacy file-spool adapter
 
