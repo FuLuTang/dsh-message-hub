@@ -11,7 +11,10 @@ async function loadClient() {
       assert.equal(id, 'dsh-message-hub')
       plugin = factory((name) => {
         assert.equal(name, 'react')
-        return {}
+        return {
+          useState(initial) { return [initial, () => {}] },
+          createElement(type, props, ...children) { return { type, props: props || {}, children } },
+        }
       })
     } } },
   }, { filename: 'lib/client.js' })
@@ -31,6 +34,18 @@ test('client registers a card in Plugin configuration, not a new top tab', async
   assert.equal(card.options.name, 'settings.plugin.item')
   assert.equal(card.options.key, 'message-hub')
   assert.equal(typeof card.Component, 'function')
+  const shell = card.Component()
+  assert.equal(shell.type, 'li')
+  assert.equal(shell.props.style.borderRadius, 16)
+  const header = shell.children[0]
+  assert.equal(header.type, 'button')
+  assert.equal(header.props['aria-expanded'], false)
+  assert.equal(header.props.style.display, 'flex')
+  const [labels, chevron] = header.children
+  assert.equal(labels.props.style.flexDirection, 'column')
+  assert.equal(labels.children[0].children[0], '消息渠道（Message Hub）')
+  assert.equal(chevron.type.name, 'ChevronDown')
+  assert.equal(chevron.type(chevron.props).type, 'svg')
 })
 
 test('bundle loads the Plugins settings owner and client slot', async () => {
