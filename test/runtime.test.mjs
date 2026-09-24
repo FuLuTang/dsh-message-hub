@@ -18,6 +18,16 @@ class FakeTools extends Service {
   }
 }
 
+class FakeSettings extends Service {
+  constructor(ctx) {
+    super(ctx, 'settings')
+    this.namespaces = new Map()
+  }
+  register(namespace, schema, options) {
+    this.namespaces.set(namespace, { schema, options })
+  }
+}
+
 class FakeSessionController extends Service {
   constructor(ctx) {
     super(ctx, 'sessionController')
@@ -38,6 +48,7 @@ test('plugin applies through a real Cordis context and routes a file trigger to 
   t.after(() => rm(`${rootPath}-hub-state.json.lock`, { force: true }))
   const root = new Context()
   await root.plugin(FakeTools)
+  await root.plugin(FakeSettings)
   await root.plugin(FakeSessionController)
   const plugin = Object.assign((ctx) => apply(ctx, {
     storagePath: `${rootPath}-hub-state.json`,
@@ -50,6 +61,7 @@ test('plugin applies through a real Cordis context and routes a file trigger to 
     outlets: [],
   }), { inject })
   const fiber = await root.plugin(plugin)
+  assert.equal(root.settings.namespaces.has('message-hub'), true)
   t.after(() => fiber.dispose())
   t.after(() => root.fiber.dispose())
   await root.messageHub.registerEgress({

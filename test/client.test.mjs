@@ -18,7 +18,7 @@ async function loadClient() {
   return plugin
 }
 
-test('client declares slots and registers a Message Hub tab in Plugins settings', async () => {
+test('client registers a card in Plugin configuration, not a new top tab', async () => {
   const plugin = await loadClient()
   assert.deepEqual(Array.from(plugin.inject), ['slots'])
   const installed = []
@@ -26,17 +26,14 @@ test('client declares slots and registers a Message Hub tab in Plugins settings'
     inject(name, installer) { installed.push({ name, installer }) },
     register(options, Component) { return { options, Component } },
   } })
-  assert.deepEqual(installed.map(({ name }) => name), [
-    'conversation.session.header.utilities', 'settings.plugins.tab',
-  ])
-  const settings = installed[1].installer()
-  assert.equal(settings.options.name, 'settings.plugins.tab')
-  assert.equal(settings.options.id, 'message-hub')
-  assert.equal(settings.options.label, '消息渠道')
-  assert.equal(typeof settings.Component, 'function')
+  assert.deepEqual(installed.map(({ name }) => name), ['settings.plugin.item'])
+  const card = installed[0].installer()
+  assert.equal(card.options.name, 'settings.plugin.item')
+  assert.equal(card.options.key, 'message-hub')
+  assert.equal(typeof card.Component, 'function')
 })
 
-test('bundle declares the Plugins settings owner for its client slot', async () => {
+test('bundle loads the Plugins settings owner and client slot', async () => {
   const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
   assert.ok(manifest.dsh.client.inject.includes('@deepseek-ai/dsh-client-ui-settings-plugins'))
   assert.equal(manifest.exports['./client'], './lib/client.js')

@@ -936,6 +936,14 @@ export async function apply(ctx, config) {
   }
   ctx.effect(() => () => hub.stop(), 'message-hub runtime')
 
+  // settings.plugin.item is dispatched only for namespaces served by the Host.
+  // The authoritative channel configuration remains in Hub state; this empty
+  // namespace makes the management card visible under Settings → Plugins →
+  // Plugin configuration without introducing a second configuration store.
+  ctx.inject(['settings'], (settingsCtx) => {
+    settingsCtx.settings.register('message-hub', Schema.object({}), { base: {} })
+  })
+
   ctx.tools.register(defineTool({
     name: 'message_hub_bind',
     description: 'Bind a Message Hub adapter to this exact conversation. Incoming events from that adapter will wake this conversation; no other conversation is selected implicitly.',
