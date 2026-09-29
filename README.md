@@ -20,6 +20,17 @@ dsh plugin --profile web add link:/absolute/path/to/dsh-message-hub
 
 不建议只执行 `npm install`/`pnpm add`：那只安装依赖，不保证插件进入 profile 的 bundle 列表。Node.js 要求 `>=22`。
 
+## 配置
+
+```yaml
+storagePath: ''          # 缺省 $DSH_HOME/message-hub/state.json
+maxLedgerEntries: 2000
+channels: []             # 声明式渠道元数据；运行时实现由受信任插件注册
+spools: []               # 内建 file-spool adapter，见下文
+outlets: []              # file-spool 出站路由
+wakeupMode: steer        # 唤醒默认方式：steer=插话 / followup=排队；绑定可用 wakeupMode 覆盖
+```
+
 ## Channel registry
 
 配置中的 `channels` 只是声明渠道元数据和初始开关；真正的运行时实现由受信任的 DSH 插件注册：
@@ -79,11 +90,12 @@ await ctx.messageHub.registerEgress({
 
 - `template`：覆盖渠道模板；支持 `{{text}}` 以及 `event.values` 中的 `{{sender}}` 等简单键。
 - `wakeup`：是否在两个上下文注入后唤醒 Agent，默认开启。
+- `wakeupMode`：`steer`（默认）= 插话，作为 next-step 输入投递，运行中的 driver 在下一个 step 边界消费，空闲时同步开一个轮次；`followup` = 排队一个独立的下一个轮次。留空则跟随全局 `wakeupMode`。
 - `cwd`：替代会话工作目录。
 
 `emitIngress(channelId, event)` 的流程是：检查开关和绑定、按 `eventId`/`id` 去重，然后解析绑定 session。若 session 已不可用且绑定包含 `cwd`，Hub 会用该 cwd 创建替代会话、更新绑定并继续投递；没有 cwd 或创建失败则保留失败结果，不会投递到别的会话。
 
-成功的 ingress 路由向目标 Agent 注入两条消息：第一条说明这是来自该渠道的不可信外部上下文，第二条包含渲染后的 `<external-message>` 内容；若事件、绑定和渠道都允许唤醒，再追加一次 `followup`。事件默认字段包括 `eventId`/`id`、`values`、`text`、`sender`；不同 transport 可携带自己的元数据。入站 ledger 提供至少一次语义。
+成功的 ingress 路由向目标 Agent 注入两条消息：第一条说明这是来自该渠道的不可信外部上下文，第二条包含渲染后的 `<external-message>` 内容；若事件、绑定和渠道都允许唤醒，再按 `wakeupMode` 唤醒一次（`steer` 插话 / `followup` 排队）。file-spool 的入站走同一条唤醒路径。Agent 对象若没有 `steer()`（旧版运行时），Hub 自动降级为 `followup`，不会丢掉这次唤醒。事件默认字段包括 `eventId`/`id`、`values`、`text`、`sender`；不同 transport 可携带自己的元数据。入站 ledger 提供至少一次语义。
 
 ## 固定 Agent 工具
 
@@ -104,11 +116,11 @@ await ctx.messageHub.registerEgress({
 
 启用 Web runtime 时，插件注册本地前缀 `/message-hub/api`。所有接口均为 JSON `POST`，且只接受受信任的 localhost/配置 trusted host 请求：
 
-- `/message-hub/api/snapshot`：返回 Hub 快照。
-- `/message-hub/api/toggle`：传入 `{ channelId, enabled }`，修改 `desiredEnabled`。
-- `/message-hub/api/bind`：传入 `{ channelId, sessionId, cwd?, template?, wakeup? }`，绑定 ingress，并可设置替代 cwd。
+- `/message-hub/api/snapshot`：返回 Hub 快照（含 `defaultWakeupMode`，供面板显示绑定继承的默认唤醒方式）。
+- `/message-hub/api/toggle`：传入 `{ channelId, enabled }`，修改 `desiredEnabled`。对 file-spool 是**运行时开关**：只启动/停止轮询，不改配置，重启后按配置恢复。
+- `/message-hub/api/bind`：传入 `{ channelId, sessionId, cwd?, template?, wakeup?, wakeupMode? }`，绑定 ingress 或 file-spool（两者共用同一份绑定记录），并可设置替代 cwd 与唤醒方式。
 
-`lib/client.js` 提供 Web 客户端 bundle：**设置 → 插件 → 插件配置**列表中的「消息渠道（Message Hub）」卡片展示接入/发出渠道、黑黄绿灯、开关与 ingress 绑定，每 5 秒刷新快照；点击卡片展开。不会额外添加顶部标签或会话标题栏按钮。此列表按 Host 提供的 settings namespace 筛选卡片，所以 Host 注册空的 `message-hub` namespace 作为卡片发现标识，渠道数据仍保存在 Hub 自己的状态文件中，客户端以 `key: 'message-hub'` 注册 `settings.plugin.item` 卡片。Headless profile 可以只使用 Host runtime 和 Agent tools，不注入客户端。
+`lib/client.js` 提供 Web 客户端 bundle：**设置 → 插件 → 插件配置**列表中的「消息渠道（Message Hub）」卡片展示接入/发出渠道、黑黄绿灯、开关与绑定，每 5 秒刷新快照；点击卡片展开。已配置的 `spools` 会作为 `收发` 方向、`文件目录` 类型的渠道出现（绿灯 = 正在轮询，黄灯 = 扫描失败，黑灯 = 已停止），并显示根目录；只有真的没有任何渠道时才提示“尚无已注册渠道”。绑定行显示 `唤醒：插话/排队`，可逐渠道切换或恢复跟随全局默认。不会额外添加顶部标签或会话标题栏按钮。此列表按 Host 提供的 settings namespace 筛选卡片，所以 Host 注册空的 `message-hub` namespace 作为卡片发现标识，渠道数据仍保存在 Hub 自己的状态文件中，客户端以 `key: 'message-hub'` 注册 `settings.plugin.item` 卡片。Headless profile 可以只使用 Host runtime 和 Agent tools，不注入客户端。
 
 ## Legacy file-spool adapter
 
@@ -117,6 +129,7 @@ await ctx.messageHub.registerEgress({
 ```yaml
 spools:
   - id: volume-main
+    label: 共享目录            # 可选，面板显示名，缺省用 id
     root: /mnt/message-device
     enabled: true
     defaultSessionId: ''
@@ -152,6 +165,8 @@ root/
 
 成功排进精确绑定 session 后，`ackMode: delete` 将 trigger 移入 processed，`keep` 则保留原文件并依靠 ledger 去重。session 不可用或路由失败时不会确认。语义是至少一次，外部事件应提供稳定 ID 并让业务动作幂等。
 
+已启用的 spool 同时作为接入与发出渠道出现在管理面板（`收发` 方向、`文件目录` 类型）。面板里的绑定写入与 `defaultSessionId` 同一份绑定表，且优先于它；面板开关只切换当前进程的轮询状态（绿灯=轮询中、黄灯=扫描失败、黑灯=停止），不修改配置，重启后按配置恢复。
+
 出站文件写入 `output/<deliveryId>.json`，这只表示 Hub 已接受并进入 outbox；外部程序可在 `output/ack/<deliveryId>.ack.json` 写入 `{ deliveryId, state: "sent", externalId }` 或 failed 结果。`status.json` 可原子替换，例如：
 
 ```json
@@ -180,6 +195,11 @@ dsh plugin --profile web add github:FuLuTang/dsh-message-hub
 ```
 
 参考：[官方发布文档](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/develop/basic/publish.md)、[dsh-cron 社区实现](https://github.com/XiaoWind/dsh-cron) 和 [DSH plugin market 约定](https://github.com/deepseek-ai/deepseek-harness/discussions/5867)。
+
+## 变更记录
+
+- `0.2.0`：已配置的 `spools` 作为 `收发` 渠道出现在管理面板（根目录、轮询灯、运行时开关、面板绑定）；新增全局/绑定级 `wakeupMode`（默认 `steer` 插话，`followup` 排队），旧运行时无 `steer()` 时自动降级。
+- `0.1.0`：渠道注册表、Web 管理面板与 file-spool adapter。
 
 ## 开发
 

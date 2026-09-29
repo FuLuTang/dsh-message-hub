@@ -1,6 +1,6 @@
 {
   "name": "dsh-message-hub",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A channel registry and transport-neutral communication hub plugin for DeepSeek Harness.",
   "license": "MIT",
   "repository": {
